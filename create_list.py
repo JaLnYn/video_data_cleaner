@@ -51,6 +51,12 @@ def evaluate_quality(paras):
         scores.append(float(pred.item()))
     return scores
 
+def sorted_walk(top, topdown=True, onerror=None, followlinks=False):
+    for root, dirs, files in os.walk(top, topdown=topdown, onerror=onerror, followlinks=followlinks):
+        dirs.sort()  # Sort directories in-place for consistent traversal
+        files.sort()  # Sort files in-place for consistent processing order
+        yield root, dirs, files
+
 def walk_directory_and_process(directory_path, threshold, output_file, batch_size=10, NUM_FRAMES=1):
     count = 0
     model_hyper = models.HyperNet(16, 112, 224, 112, 56, 28, 14, 7).cuda()
@@ -61,11 +67,18 @@ def walk_directory_and_process(directory_path, threshold, output_file, batch_siz
         torchvision.transforms.ToTensor(),
     ])
 
+    processed_videos = set()
+    if os.path.exists("logs.txt"):
+        with open("logs.txt", 'r') as file:
+            processed_videos = set(file.read().splitlines())
+
     video_paths = []
-    for root, dirs, files in os.walk(directory_path):
+    for root, dirs, files in sorted_walk(directory_path):
         for file in files:
             if file.endswith('.mp4'):
-                video_paths.append(os.path.join(root, file))
+                path = os.path.join(root, file)
+                if path not in processed_videos:
+                    video_paths.append(path)
 
     # Process in batches
     buckets = [[] for i in range(11)]
@@ -97,14 +110,18 @@ def walk_directory_and_process(directory_path, threshold, output_file, batch_siz
         for idx in range(len(buckets)):
             bucket_file.write(f"bucket {idx}: {len(buckets[idx])} videos\n")
 
+    with open("logs.txt", 'a') as file:
+        for path in batch_paths:
+            file.write(path + '\n')
+
     print(f"Processing complete {count}/{len(video_paths)} remains")
 
 # Usage
 directory_path = '../talkinghead/dataset/mp4/'
 # directory_path = './videos'
 output_file = 'quality_scores.txt'
-threshold = 35  # Set your quality threshold
-walk_directory_and_process(directory_path, threshold, output_file, batch_size=4, NUM_FRAMES=8)
+threshold = 40  # Set your quality threshold
+walk_directory_and_process(directory_path, threshold, output_file, batch_size=4, NUM_FRAMES=4)
 
 # ./talkinghead/
 
