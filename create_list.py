@@ -7,6 +7,7 @@ import models
 from PIL import Image
 from tqdm import tqdm
 import numpy as np
+from pytorch_lightning import LightningModule, Trainer
 
 def pil_loader(image_array):
     img = Image.fromarray(image_array)
@@ -28,28 +29,22 @@ def extract_random_frames(video_path, num_frames=3):
     cap.release()
     return frames
 
-def batch_process_frames(frames, model_hyper, transforms):
-    tensor_frames = [transforms(frame) for frame in frames if frame is not None]
-    tensor_frames = torch.stack(tensor_frames).cuda()
-    paras = model_hyper(tensor_frames)
-    model_target = models.TargetNet(paras).cuda()
-    for param in model_target.parameters():
-        param.requires_grad = False
+class LightningWrapper(LightningModule):
+    def __init__(self, model_hyper):
+        super().__init__()
+        self.model_hyper = model_hyper 
 
-    # Quality prediction
-    pred = model_target(paras['target_in_vec'])  # 'paras['target_in_vec']' is the input to target net
-    return pred
+    def batch_process_frames(self, frames, transforms):
+        tensor_frames = [transforms(frame) for frame in frames if frame is not None]
+        tensor_frames = torch.stack(tensor_frames).cuda()
+        paras = self.model_hyper(tensor_frames)
+        model_target = models.TargetNet(paras).cuda()
+        for param in model_target.parameters():
+            param.requires_grad = False
 
-def evaluate_quality(paras):
-    model_target = models.TargetNet(paras).cuda()
-    for param in model_target.parameters():
-        param.requires_grad = False
-    
-    scores = []
-    for param in paras:
-        pred = model_target(param['target_in_vec'])
-        scores.append(float(pred.item()))
-    return scores
+        # Quality prediction
+        pred = model_target(paras['target_in_vec'])  # 'paras['target_in_vec']' is the input to target net
+        return pred
 
 def sorted_walk(top, topdown=True, onerror=None, followlinks=False):
     for root, dirs, files in os.walk(top, topdown=topdown, onerror=onerror, followlinks=followlinks):
@@ -62,6 +57,7 @@ def walk_directory_and_process(directory_path, threshold, output_file, batch_siz
     model_hyper = models.HyperNet(16, 112, 224, 112, 56, 28, 14, 7).cuda()
     model_hyper.train(False)
     model_hyper.load_state_dict(torch.load('./pretrained/koniq_pretrained.pkl'))
+    model_hyper = LightningWrapper(model_hyper)
 
     transforms = torchvision.transforms.Compose([
         torchvision.transforms.ToTensor(),
@@ -88,9 +84,7 @@ def walk_directory_and_process(directory_path, threshold, output_file, batch_siz
             frames = []
             for video_path in batch_paths:
                 frames += extract_random_frames(video_path, NUM_FRAMES)
-                # if not frames:
-                #     continue
-            scores = batch_process_frames(frames, model_hyper, transforms)
+            scores = model_hyper.batch_process_frames(frames, transforms)
             assert  NUM_FRAMES * len(batch_paths) == len(scores)
             for idx in range(len(batch_paths)):
                 score = scores[idx*NUM_FRAMES:(idx+1) * NUM_FRAMES].sum()/NUM_FRAMES
@@ -98,10 +92,6 @@ def walk_directory_and_process(directory_path, threshold, output_file, batch_siz
                 if score > threshold:
                     count += 1
                     f.write(f"{batch_paths[idx]}\n")
-                # if score > 60:
-                #     print(f"good: {batch_paths[idx]}: {score}")
-                # if score < 40:
-                #     print(f"bad: {batch_paths[idx]}: {score}")
     with open('buckets.txt', 'w') as bucket_file:
         for idx in range(len(buckets)):
             for video_path in buckets[idx]:
