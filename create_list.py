@@ -15,8 +15,11 @@ def pil_loader(image_array):
 def extract_random_frames(video_path, num_frames=3):
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    frame_indices = sorted(random.sample(range(total_frames), num_frames))
-    
+    try:
+        frame_indices = sorted(random.sample(range(total_frames), num_frames))
+    except Exception as e:
+        print(e, range(total_frames))
+        return None
     frames = []
     for frame_index in frame_indices:
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
@@ -82,26 +85,39 @@ def walk_directory_and_process(directory_path, threshold, output_file, batch_siz
 
     # Process in batches
     buckets = [[] for i in range(11)]
-    with open(output_file, 'w') as f:
-        for i in tqdm(range(0, len(video_paths), batch_size)):
-            batch_paths = video_paths[i:i+batch_size]
-            frames = []
-            for video_path in batch_paths:
-                frames += extract_random_frames(video_path, NUM_FRAMES)
-                # if not frames:
-                #     continue
-            scores = batch_process_frames(frames, model_hyper, transforms)
-            assert  NUM_FRAMES * len(batch_paths) == len(scores)
-            for idx in range(len(batch_paths)):
-                score = scores[idx*NUM_FRAMES:(idx+1) * NUM_FRAMES].sum()/NUM_FRAMES
-                buckets[int(score.item()//10)].append(batch_paths[idx])
-                if score > threshold:
-                    count += 1
-                    f.write(f"{batch_paths[idx]}\n")
-                # if score > 60:
-                #     print(f"good: {batch_paths[idx]}: {score}")
-                # if score < 40:
-                #     print(f"bad: {batch_paths[idx]}: {score}")
+    with open(output_file, 'a') as f:
+        with open("logs.txt", 'a') as file:
+            for i in tqdm(range(0, len(video_paths), batch_size)):
+                batch_paths = video_paths[i:i+batch_size]
+                frames = []
+                scores = torch.zeros(NUM_FRAMES * len(batch_paths))
+                valid_scores = []
+                for idx, video_path in enumerate(batch_paths):
+                    fra = extract_random_frames(video_path, NUM_FRAMES)
+                    if fra is not None:
+                        frames += fra
+                        for score_idx in range(NUM_FRAMES):
+                            valid_scores.append(idx * NUM_FRAMES + score_idx)
+                    # if not frames:
+                    #     continue
+                
+                processed_scores = batch_process_frames(frames, model_hyper, transforms)
+                for score_idx, frame_idx in enumerate(valid_scores):
+                    scores[frame_idx] = processed_scores[score_idx]
+                assert  NUM_FRAMES * len(batch_paths) == len(scores)
+                print(scores)
+                for idx in range(len(batch_paths)):
+
+                    score = scores[idx*NUM_FRAMES:(idx+1) * NUM_FRAMES].sum()/NUM_FRAMES
+                    buckets[int(score.item()//10)].append(batch_paths[idx])
+                    if score > threshold:
+                        count += 1
+                        f.write(f"{batch_paths[idx]}\n")
+                    file.write(batch_paths[idx] + '\n')
+                if i % 10 == 0:
+                    f.flush()
+                    file.flush()
+
     with open('buckets.txt', 'w') as bucket_file:
         for idx in range(len(buckets)):
             for video_path in buckets[idx]:
@@ -110,19 +126,16 @@ def walk_directory_and_process(directory_path, threshold, output_file, batch_siz
         for idx in range(len(buckets)):
             bucket_file.write(f"bucket {idx}: {len(buckets[idx])} videos\n")
 
-    with open("logs.txt", 'a') as file:
-        for path in batch_paths:
-            file.write(path + '\n')
-
+        
     print(f"Processing complete {count}/{len(video_paths)} remains")
 
 # Usage
-directory_path = '../talkinghead/dataset/mp4/'
+# directory_path = '../talkinghead/dataset/mp4/'
 directory_path = '/datasets/voxceleb2/voxceleb2_AV/dev/mp4/'
 # directory_path = './videos'
 output_file = 'quality_scores.txt'
 threshold = 40  # Set your quality threshold
-walk_directory_and_process(directory_path, threshold, output_file, batch_size=4, NUM_FRAMES=4)
+walk_directory_and_process(directory_path, threshold, output_file, batch_size=64, NUM_FRAMES=4)
 
 # ./talkinghead/
 
