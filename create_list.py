@@ -7,6 +7,7 @@ import models
 from PIL import Image
 from tqdm import tqdm
 import numpy as np
+from torch.utils.data import Dataset, DataLoader
 from pytorch_lightning import LightningModule, Trainer
 
 def pil_loader(image_array):
@@ -33,9 +34,12 @@ class LightningWrapper(LightningModule):
     def __init__(self, model_hyper):
         super().__init__()
         self.model_hyper = model_hyper 
+        self.transforms = torchvision.transforms.Compose([
+            torchvision.transforms.ToTensor(),
+        ])
 
-    def batch_process_frames(self, frames, transforms):
-        tensor_frames = [transforms(frame) for frame in frames if frame is not None]
+    def batch_process_frames(self, frames):
+        tensor_frames = [self.transforms(frame) for frame in frames if frame is not None]
         tensor_frames = torch.stack(tensor_frames).cuda()
         paras = self.model_hyper(tensor_frames)
         model_target = models.TargetNet(paras).cuda()
@@ -52,6 +56,44 @@ def sorted_walk(top, topdown=True, onerror=None, followlinks=False):
         files.sort()  # Sort files in-place for consistent processing order
         yield root, dirs, files
 
+
+class VideoDataset(Dataset):
+    def __init__(self, directory_path, log_file='logs.txt', transform=None, num_frames=3):
+        """
+        Args:
+            directory_path (str): Path to the directory containing video files.
+            log_file (str): Path to the log file containing processed video paths.
+            transform (callable, optional): Optional transform to be applied on a sample.
+        """
+        self.transform = transform
+        self.video_paths = []
+        self.num_frames=num_frames
+
+        # Read processed videos from log file
+        processed_videos = set()
+        if os.path.exists(log_file):
+            with open(log_file, 'r') as file:
+                processed_videos = set(file.read().splitlines())
+
+        # Collect unprocessed video paths
+        for root, _, files in sorted_walk(directory_path):
+            for file in files:
+                if file.endswith('.mp4'):
+                    path = os.path.join(root, file)
+                    if path not in processed_videos:
+                        self.video_paths.append(path)
+
+    def __len__(self):
+        return len(self.video_paths)
+
+    def __getitem__(self, idx):
+        video_path = self.video_paths[idx]
+        frames = extract_random_frames(video_path, self.num_frames)
+        if self.transform:
+            frames = [self.transform(frame) for frame in frames]
+        return frames
+
+
 def walk_directory_and_process(directory_path, threshold, output_file, batch_size=10, NUM_FRAMES=1):
     count = 0
     model_hyper = models.HyperNet(16, 112, 224, 112, 56, 28, 14, 7).cuda()
@@ -59,22 +101,12 @@ def walk_directory_and_process(directory_path, threshold, output_file, batch_siz
     model_hyper.load_state_dict(torch.load('./pretrained/koniq_pretrained.pkl'))
     model_hyper = LightningWrapper(model_hyper)
 
-    transforms = torchvision.transforms.Compose([
-        torchvision.transforms.ToTensor(),
-    ])
+    dataset = VideoDataset(directory_path=directory_path)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
-    processed_videos = set()
-    if os.path.exists("logs.txt"):
-        with open("logs.txt", 'r') as file:
-            processed_videos = set(file.read().splitlines())
+    trainer = Trainer(gpus=-1, strategy="ddp")
 
-    video_paths = []
-    for root, dirs, files in sorted_walk(directory_path):
-        for file in files:
-            if file.endswith('.mp4'):
-                path = os.path.join(root, file)
-                if path not in processed_videos:
-                    video_paths.append(path)
+    score = trainer.predict(model_hyper, dataloaders=dataloader)
 
     # Process in batches
     buckets = [[] for i in range(11)]
@@ -84,7 +116,8 @@ def walk_directory_and_process(directory_path, threshold, output_file, batch_siz
             frames = []
             for video_path in batch_paths:
                 frames += extract_random_frames(video_path, NUM_FRAMES)
-            scores = model_hyper.batch_process_frames(frames, transforms)
+            # scores = model_hyper.batch_process_frames(frames, transforms)
+            scores = trainer.predict(model_hyper, dataloaders=)
             assert  NUM_FRAMES * len(batch_paths) == len(scores)
             for idx in range(len(batch_paths)):
                 score = scores[idx*NUM_FRAMES:(idx+1) * NUM_FRAMES].sum()/NUM_FRAMES
@@ -92,6 +125,7 @@ def walk_directory_and_process(directory_path, threshold, output_file, batch_siz
                 if score > threshold:
                     count += 1
                     f.write(f"{batch_paths[idx]}\n")
+
     with open('buckets.txt', 'w') as bucket_file:
         for idx in range(len(buckets)):
             for video_path in buckets[idx]:
