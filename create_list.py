@@ -118,6 +118,7 @@ def walk_directory_and_process(directory_path, threshold, output_file, batch_siz
 
 # Usage
 directory_path = '../talkinghead/dataset/mp4/'
+directory_path = '/datasets/voxceleb2/voxceleb2_AV/dev/mp4/'
 # directory_path = './videos'
 output_file = 'quality_scores.txt'
 threshold = 40  # Set your quality threshold
